@@ -35,21 +35,14 @@ body {
   -webkit-font-smoothing: auto !important;
 }
 
-/* Scale invoice preview on mobile so it is fully visible (not cut in half) */
+/*
+ * DO NOT use transform: scale() on the invoice — html2canvas then produces
+ * overlapping/garbled text (classic bug). Scroll horizontally on small screens instead.
+ */
 .invoice-preview-scale {
-  transform-origin: top center;
-}
-@media (max-width: 520px) {
-  .invoice-preview-scale {
-    transform: scale(0.68);
-    margin-bottom: -32%;
-  }
-}
-@media (min-width: 521px) and (max-width: 640px) {
-  .invoice-preview-scale {
-    transform: scale(0.85);
-    margin-bottom: -12%;
-  }
+  width: 480px;
+  max-width: 100%;
+  transform: none !important;
 }
 
 /* Subtle animation */
