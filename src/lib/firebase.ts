@@ -27,7 +27,6 @@ const app = initializeApp(firebaseConfig);
 export const dbFirestore = getFirestore(app);
 export const auth = getAuth(app);
 
-/** Email/password admin login */
 export async function adminLogin(email: string, password: string) {
   const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
   return cred.user;
@@ -56,7 +55,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-/** Save full app data for this admin user (multi-device sync) */
 export async function saveUserDataToCloud(uid: string, data: unknown): Promise<boolean> {
   try {
     await withTimeout(
@@ -78,7 +76,6 @@ export async function saveUserDataToCloud(uid: string, data: unknown): Promise<b
   }
 }
 
-/** Load full app data for this admin user */
 export async function loadUserDataFromCloud(uid: string): Promise<unknown | null> {
   try {
     const snap = await withTimeout(
@@ -95,10 +92,6 @@ export async function loadUserDataFromCloud(uid: string): Promise<unknown | null
   }
 }
 
-/**
- * Save a short-link so ANY phone can open the invoice (no login).
- * Token is the full encoded invoice payload.
- */
 export async function saveShareToFirebase(
   shortId: string,
   data: { invoiceId: string; token: string },
@@ -121,7 +114,6 @@ export async function saveShareToFirebase(
   }
 }
 
-/** Load short-link payload (public — customer device) */
 export async function getShareFromFirebase(
   shortId: string,
 ): Promise<{ token: string; invoiceId: string } | null> {
