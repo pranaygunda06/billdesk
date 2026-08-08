@@ -296,6 +296,36 @@ export const db = {
     write(d);
   },
 
+  /**
+   * Edit an existing invoice (same invoice number + same short link).
+   * Replaces line items and totals; customer outstanding is adjusted by the delta.
+   */
+  updateInvoice(inv: Invoice, items: InvoiceItem[]) {
+    const d = read();
+    const idx = d.invoices.findIndex((x) => x.id === inv.id);
+    if (idx < 0) throw new Error('Invoice not found');
+    const old = d.invoices[idx];
+
+    if (old.customerId) {
+      const c = d.customers.find((x) => x.id === old.customerId);
+      if (c) {
+        c.outstandingBalance = Math.max(
+          0,
+          c.outstandingBalance - (old.outstandingAmount || 0) + (inv.outstandingAmount || 0),
+        );
+      }
+    }
+
+    d.invoices[idx] = {
+      ...inv,
+      id: old.id,
+      invoiceNumber: old.invoiceNumber,
+      createdAt: old.createdAt,
+    };
+    d.invoice_items = d.invoice_items.filter((x) => x.invoiceId !== inv.id).concat(items);
+    write(d);
+  },
+
   getInvoiceItems(invoiceId: string): InvoiceItem[] {
     return read().invoice_items.filter((x) => x.invoiceId === invoiceId);
   },
@@ -379,23 +409,27 @@ export const db = {
   },
 
   /** Bind logged-in user and pull cloud data onto this device */
-  async bindCloudUser(uid: string): Promise<{ fromCloud: boolean }> {
+  async bindCloudUser(uid: string): Promise<{ fromCloud: boolean; pushed: boolean }> {
     _cloudUid = uid;
     const remote = await loadUserDataFromCloud(uid);
     if (remote && typeof remote === 'object') {
       const payload = remote as DB;
-      // Basic shape check
       if (payload.business_profile && Array.isArray(payload.products)) {
         if (!Array.isArray(payload.share_shortcuts)) payload.share_shortcuts = [];
+        if (!Array.isArray(payload.invoices)) payload.invoices = [];
+        if (!Array.isArray(payload.invoice_items)) payload.invoice_items = [];
+        if (!Array.isArray(payload.customers)) payload.customers = [];
+        if (!Array.isArray(payload.payments)) payload.payments = [];
+        // Cloud is source of truth for this email (same data on all devices)
         localStorage.setItem(KEY, JSON.stringify(payload));
         _notify();
-        return { fromCloud: true };
+        return { fromCloud: true, pushed: false };
       }
     }
-    // No cloud data yet — push current local (or seed) up so other devices can pull it
+    // No cloud data yet — upload this device so other logins get the same data
     const local = read();
-    await saveUserDataToCloud(uid, local);
-    return { fromCloud: false };
+    const ok = await saveUserDataToCloud(uid, local);
+    return { fromCloud: false, pushed: ok };
   },
 
   clearCloudUser() {

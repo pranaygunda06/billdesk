@@ -1,22 +1,81 @@
 import { useState } from 'react';
 import { db } from '../lib/db';
 import { useDbTick } from '../hooks/useDbTick';
+import { useAuth } from '../hooks/useAuth';
 import type { BusinessProfile } from '../types';
-import { Save, CheckCircle2 } from 'lucide-react';
+import { Save, CheckCircle2, Cloud, RefreshCw } from 'lucide-react';
 
 export default function Settings() {
   useDbTick();
+  const { user } = useAuth();
   const [p, setP] = useState<BusinessProfile>(db.getBusinessProfile());
   const [saved, setSaved] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   function save() {
     db.updateBusinessProfile(p);
     setSaved(true);
+    void db.forceCloudPush();
     setTimeout(() => setSaved(false), 2500);
+  }
+
+  async function syncNow() {
+    if (!user) {
+      setSyncMsg('Login required for cloud sync');
+      return;
+    }
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const result = await db.bindCloudUser(user.uid);
+      const ok = await db.forceCloudPush();
+      if (result.fromCloud) {
+        setP(db.getBusinessProfile());
+        setSyncMsg('Pulled latest data from cloud for this email ✓');
+      } else if (ok) {
+        setSyncMsg('Uploaded this device data to cloud ✓ — login on phone to get it');
+      } else {
+        setSyncMsg('Sync failed — check Firebase rules for users/{uid}');
+      }
+    } catch (e: any) {
+      setSyncMsg(e?.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMsg(''), 5000);
+    }
   }
 
   return (
     <div className="max-w-3xl space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-indigo-50">
+          <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center"><Cloud size={18}/></div>
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-slate-900">Cloud sync (same email = same data)</div>
+            <div className="text-xs text-slate-500 truncate">
+              {user?.email ? `Signed in as ${user.email}` : 'Not signed in'}
+              {db.getCloudUid() ? ' · cloud linked' : ' · cloud not linked'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={syncNow}
+            disabled={syncing}
+            className="inline-flex items-center gap-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-sm font-bold px-4 py-2 rounded-lg"
+          >
+            <RefreshCw size={15} className={syncing ? 'animate-spin' : ''}/>
+            {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+        </div>
+        {syncMsg && (
+          <div className="px-6 py-3 text-sm font-semibold text-sky-800 bg-sky-50 border-t border-sky-100">{syncMsg}</div>
+        )}
+        <div className="px-6 py-3 text-xs text-slate-500 leading-relaxed">
+          After login, data is stored under your Firebase user. Use the same email on phone and laptop.
+          Publish Firestore rules that allow <code className="bg-slate-100 px-1 rounded">users/{'{uid}'}</code> for signed-in users.
+        </div>
+      </div>
       <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-100"
           style={{ background: 'linear-gradient(135deg,#4f46e5 0%,#1e1b4b 100%)' }}>

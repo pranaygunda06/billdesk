@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/db';
 import { useDbTick } from '../hooks/useDbTick';
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner';
@@ -30,11 +30,15 @@ interface CartItem extends InvoiceItem {
 export default function Billing() {
   useDbTick();
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
+  const editId = searchParams.get('edit') || '';
   const customers = db.getCustomers();
   const products = db.getProducts();
   const business = db.getBusinessProfile();
 
   const [customerId, setCustomerId] = useState<string>('');
+  const [editingInvoiceId, setEditingInvoiceId] = useState<string>('');
+  const [editingInvoiceNumber, setEditingInvoiceNumber] = useState<string>('');
   const [newCustomerOpen, setNewCustomerOpen] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [billDiscount, setBillDiscount] = useState<number>(0);
@@ -46,6 +50,41 @@ export default function Billing() {
   const [productExpanded, setProductExpanded] = useState(true);
   const [notes, setNotes] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
+
+  // Load invoice into cart when ?edit=invoiceId
+  useEffect(() => {
+    if (!editId) return;
+    const inv = db.getInvoiceById(editId);
+    if (!inv) return;
+    const items = db.getInvoiceItems(inv.id);
+    setEditingInvoiceId(inv.id);
+    setEditingInvoiceNumber(inv.invoiceNumber);
+    setCustomerId(inv.customerId);
+    setNotes(inv.notes || '');
+    // Keep discounts on lines; bill-level discount starts at 0 for clean re-edit
+    setBillDiscount(0);
+    setBillDiscountType('amt');
+    const cartItems: CartItem[] = items.map((it) => {
+      const prod = db.getProductById(it.productId);
+      const gross = it.unitPrice * it.quantity;
+      const disc = it.discount || 0;
+      const net = Math.max(0, gross - disc);
+      const gst = (net * (it.gstPercent ?? 0)) / 100;
+      return {
+        id: it.id,
+        invoiceId: inv.id,
+        productId: it.productId,
+        name: it.name,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        discount: disc,
+        gstPercent: it.gstPercent ?? 0,
+        lineTotal: net + gst,
+        product: prod,
+      };
+    });
+    setCart(cartItems);
+  }, [editId]);
 
   const customer = customers.find(c => c.id === customerId);
   const filteredCustomers = customers.filter(c =>
@@ -155,25 +194,60 @@ export default function Billing() {
 
   function generate() {
     if (!canGenerate()) return;
-    const invId = generateId('inv_');
-    const num = `${business.invoicePrefix || 'PS/'}${Date.now().toString().slice(-8)}`;
     const today = new Date();
     const due = new Date(today);
     due.setDate(due.getDate() + (customer?.creditDays || 7));
 
-    // Proportionally allocate bill discount to invoice items (for per-line accurate totals)
     const itemsOut: InvoiceItem[] = cart.map(x => {
       const gross = x.unitPrice * x.quantity;
       const lineShare = afterItemDisc > 0 ? (gross - x.discount) / afterItemDisc : 0;
       const lineBillDisc = lineShare * billDiscAmt;
       return {
-        ...x,
-        id: x.id,
-        invoiceId: invId,
+        id: x.id || generateId('it_'),
+        invoiceId: '',
+        productId: x.productId,
+        name: x.name,
+        quantity: x.quantity,
+        unitPrice: x.unitPrice,
         discount: x.discount + lineBillDisc,
+        gstPercent: x.gstPercent,
         lineTotal: Math.max(0, (gross - x.discount - lineBillDisc) * (1 + x.gstPercent / 100)),
       };
     });
+
+    if (editingInvoiceId) {
+      // UPDATE existing invoice — same number, same short link
+      const old = db.getInvoiceById(editingInvoiceId);
+      if (!old) return;
+      const received = old.receivedAmount || 0;
+      const newOutstanding = Math.max(0, grandTotal - received);
+      const invoice: Invoice = {
+        ...old,
+        customerId,
+        dueDate: due.toISOString(),
+        subtotal,
+        discount: itemsDiscount + billDiscAmt,
+        gstAmount: gstTotal,
+        grandTotal,
+        outstandingAmount: newOutstanding,
+        status: newOutstanding <= 0 ? 'Paid' : 'Unpaid',
+        paymentStatus: newOutstanding <= 0 ? 'Paid' : received > 0 ? 'Partial' : 'Unpaid',
+        notes,
+        terms: business.terms,
+        footer: business.invoiceFooter,
+        returnPolicy: business.returnPolicy,
+      };
+      const itemsWithInv = itemsOut.map((it) => ({ ...it, invoiceId: editingInvoiceId }));
+      db.updateInvoice(invoice, itemsWithInv);
+      void db.forceCloudPush();
+      nav(`/invoices/${editingInvoiceId}`);
+      return;
+    }
+
+    // CREATE new invoice
+    const invId = generateId('inv_');
+    const num = `${business.invoicePrefix || 'PS/'}${Date.now().toString().slice(-8)}`;
+    const itemsWithInv = itemsOut.map((it) => ({ ...it, invoiceId: invId }));
 
     const invoice: Invoice = {
       id: invId,
@@ -215,12 +289,31 @@ export default function Billing() {
       createdAt: today.toISOString(),
     };
 
-    db.addInvoice(invoice, itemsOut, payment);
+    db.addInvoice(invoice, itemsWithInv, payment);
+    void db.forceCloudPush();
     nav(`/invoices/${invId}`);
   }
 
   return (
     <div className="space-y-4">
+      {editingInvoiceId && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-sm font-semibold text-amber-900">
+            Editing invoice <span className="font-extrabold">{editingInvoiceNumber}</span>
+            <span className="block text-xs font-normal text-amber-700 mt-0.5">
+              Same invoice number &amp; short link will update for the customer after you save.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => nav(`/invoices/${editingInvoiceId}`)}
+            className="text-xs font-bold text-amber-800 underline"
+          >
+            Cancel edit
+          </button>
+        </div>
+      )}
+
       {/* POS top bar — camera scan only (no back button) */}
       <div className="flex items-center justify-end gap-3 flex-wrap">
         <button
@@ -429,7 +522,7 @@ export default function Billing() {
                   disabled={!canGenerate()}
                   className="inline-flex items-center gap-2 bg-gradient-to-r from-brand-600 to-brand-800 hover:from-brand-700 hover:to-brand-900 text-white font-bold px-6 py-3 rounded-xl shadow-pop disabled:opacity-40 disabled:cursor-not-allowed transition"
                 >
-                  <ReceiptText size={18}/> Generate Bill
+                  <ReceiptText size={18}/> {editingInvoiceId ? "Update Invoice" : "Generate Bill"}
                 </button>
               </div>
             </div>
