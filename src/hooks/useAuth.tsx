@@ -24,7 +24,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (u) {
         setCloudReady(false);
         try {
-          // Pull shared data for this email onto this device
           await db.bindCloudUser(u.uid);
         } catch (e) {
           console.error('Cloud bind failed', e);
@@ -57,7 +56,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
       async logout() {
-        // Push latest data before logout so other devices stay in sync
         try {
           await db.forceCloudPush();
         } catch {
