@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import html2canvas from 'html2canvas';
 import QRCode from 'react-qr-code';
@@ -69,6 +69,23 @@ export default function InvoiceDetail() {
       shortLink: `${origin}/#/p/${shortcut.shortId}`,
     };
   }, [invoice, customer, business, items]);
+
+  // Ensure short link is on Firebase + full DB is cloud-synced (so other devices + customers work)
+  useEffect(() => {
+    if (!shortId || !paymentToken || !invoice) return;
+    let cancelled = false;
+    (async () => {
+      const ok = await db.publishShareToCloud(shortId, invoice.id, paymentToken);
+      await db.forceCloudPush();
+      if (!cancelled && !ok) {
+        setToast('Warning: customer link may not work on other phones — check Firebase rules');
+        setTimeout(() => setToast(''), 4000);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [shortId, paymentToken, invoice]);
 
   const waMessage = useMemo(() => {
     if (!business || !customer || !invoice) return '';

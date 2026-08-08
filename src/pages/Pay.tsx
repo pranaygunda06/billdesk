@@ -22,46 +22,49 @@ export default function Pay() {
   const invRef = useRef<HTMLDivElement>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // Resolve short link: first local, then Firebase
+  // Resolve short link: local first, then Firebase (with timeout so UI never spins forever)
   useEffect(() => {
     let cancelled = false;
 
     async function resolve() {
       setLoading(true);
+      setResolvedToken('');
 
-      if (!isShort) {
-        // Full token link
+      try {
+        if (!isShort) {
+          // Full long token in the URL
+          if (!cancelled) setResolvedToken(token);
+          return;
+        }
+
+        // 1. Same browser (seller device) — local shortcut
+        try {
+          const local = db.getShareByShortId(token);
+          if (local?.token) {
+            if (!cancelled) setResolvedToken(local.token);
+            return;
+          }
+        } catch {
+          /* ignore local errors */
+        }
+
+        // 2. Firebase — works on customer phone / any network
+        const remote = await getShareFromFirebase(token);
         if (!cancelled) {
-          setResolvedToken(token);
-          setLoading(false);
+          setResolvedToken(remote?.token || '');
         }
-        return;
-      }
-
-      // 1. Try local IndexedDB first (fast)
-      const local = db.getShareByShortId(token);
-      if (local?.token) {
-        if (!cancelled) {
-          setResolvedToken(local.token);
-          setLoading(false);
-        }
-        return;
-      }
-
-      // 2. Try Firebase (works on any device)
-      const remote = await getShareFromFirebase(token);
-      if (!cancelled) {
-        if (remote?.token) {
-          setResolvedToken(remote.token);
-        } else {
-          setResolvedToken('');
-        }
-        setLoading(false);
+      } catch (e) {
+        console.error('Pay resolve failed', e);
+        if (!cancelled) setResolvedToken('');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
 
     resolve();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [token, isShort]);
 
   // Decode once we have the token

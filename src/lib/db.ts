@@ -1,10 +1,17 @@
 import type { BusinessProfile, Category, Customer, Invoice, InvoiceItem, Payment, Product, ShareShortcut } from '../types';
 import { generateId } from './utils';
-import { saveShareToFirebase } from './firebase';
-
-type Table = 'customers' | 'products' | 'suppliers' | 'categories' | 'invoices' | 'invoice_items' | 'payments' | 'business_profile' | 'share_shortcuts';
+import {
+  saveShareToFirebase,
+  saveUserDataToCloud,
+  loadUserDataFromCloud,
+} from './firebase';
 
 const KEY = 'ps_enterprise_web_db_v2'; // v2: default GST 0 on all seed products
+
+/** Currently logged-in Firebase UID — used for multi-device cloud sync */
+let _cloudUid: string | null = null;
+let _syncTimer: ReturnType<typeof setTimeout> | null = null;
+let _syncing = false;
 
 interface DB {
   customers: Customer[];
@@ -126,9 +133,19 @@ function read(): DB {
   }
 }
 
-function write(db: DB) {
-  localStorage.setItem(KEY, JSON.stringify(db));
+function write(dbData: DB) {
+  localStorage.setItem(KEY, JSON.stringify(dbData));
   _notify();
+  // Debounced cloud sync so laptop + phone share the same data
+  if (_cloudUid) {
+    if (_syncTimer) clearTimeout(_syncTimer);
+    _syncTimer = setTimeout(() => {
+      if (!_cloudUid) return;
+      saveUserDataToCloud(_cloudUid, dbData).catch((e) =>
+        console.error('cloud sync write failed', e),
+      );
+    }, 400);
+  }
 }
 
 type Listener = () => void;
@@ -322,13 +339,21 @@ export const db = {
     return read().categories;
   },
 
-  /** Create short link + also save to Firebase so any phone can open it */
+  /**
+   * Create short link + save token to Firebase so customer phones can open it.
+   * Always re-uploads the latest token to Firebase (invoice data may change).
+   */
   getOrCreateShareShortcut(args: { invoiceId: string; token: string }): ShareShortcut {
     const d = read();
     const existing = d.share_shortcuts.find((s) => s.invoiceId === args.invoiceId);
     if (existing) {
-      // still push to Firebase in case it was never synced
-      saveShareToFirebase(existing.shortId, { invoiceId: existing.invoiceId, token: existing.token });
+      existing.token = args.token;
+      write(d);
+      // Must reach Firebase — otherwise customer link spins forever
+      void saveShareToFirebase(existing.shortId, {
+        invoiceId: existing.invoiceId,
+        token: args.token,
+      });
       return existing;
     }
     let sid = shortId(8);
@@ -343,10 +368,48 @@ export const db = {
     d.share_shortcuts.push(sc);
     write(d);
 
-    // Save to Firebase (async, non-blocking)
-    saveShareToFirebase(sid, { invoiceId: args.invoiceId, token: args.token });
+    void saveShareToFirebase(sid, { invoiceId: args.invoiceId, token: args.token });
 
     return sc;
+  },
+
+  /** Explicitly push a short link to Firebase and return success */
+  async publishShareToCloud(shortId: string, invoiceId: string, token: string): Promise<boolean> {
+    return saveShareToFirebase(shortId, { invoiceId, token });
+  },
+
+  /** Bind logged-in user and pull cloud data onto this device */
+  async bindCloudUser(uid: string): Promise<{ fromCloud: boolean }> {
+    _cloudUid = uid;
+    const remote = await loadUserDataFromCloud(uid);
+    if (remote && typeof remote === 'object') {
+      const payload = remote as DB;
+      // Basic shape check
+      if (payload.business_profile && Array.isArray(payload.products)) {
+        if (!Array.isArray(payload.share_shortcuts)) payload.share_shortcuts = [];
+        localStorage.setItem(KEY, JSON.stringify(payload));
+        _notify();
+        return { fromCloud: true };
+      }
+    }
+    // No cloud data yet — push current local (or seed) up so other devices can pull it
+    const local = read();
+    await saveUserDataToCloud(uid, local);
+    return { fromCloud: false };
+  },
+
+  clearCloudUser() {
+    _cloudUid = null;
+  },
+
+  /** Force immediate cloud upload of current local data */
+  async forceCloudPush(): Promise<boolean> {
+    if (!_cloudUid) return false;
+    return saveUserDataToCloud(_cloudUid, read());
+  },
+
+  getCloudUid() {
+    return _cloudUid;
   },
 
   getShareByShortId(shortId: string): ShareShortcut | undefined {
