@@ -1,6 +1,7 @@
 /**
  * Build a PNG data-URL QR for invoice export.
  * Order: offline canvas (qrcode CDN) → external API → empty.
+ * More resilient: retries + longer timeouts.
  */
 
 let qrLibPromise: Promise<void> | null = null;
@@ -10,10 +11,22 @@ function loadQrLib(): Promise<void> {
   if ((window as any).QRCode) return Promise.resolve();
   if (qrLibPromise) return qrLibPromise;
   qrLibPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-qrcode-lib]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('qr lib load failed')));
+      // Already loaded?
+      if ((window as any).QRCode) resolve();
+      return;
+    }
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js';
+    s.setAttribute('data-qrcode-lib', '1');
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error('qr lib load failed'));
+    s.onerror = () => {
+      qrLibPromise = null;
+      reject(new Error('qr lib load failed'));
+    };
     document.head.appendChild(s);
   });
   return qrLibPromise;
@@ -42,7 +55,7 @@ async function fromQrLib(text: string, size: number): Promise<string> {
 
 async function fromPublicApi(text: string, size: number): Promise<string> {
   const api = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=8&ecc=M&data=${encodeURIComponent(text)}`;
-  const res = await fetch(api);
+  const res = await fetch(api, { mode: 'cors' });
   if (!res.ok) throw new Error('api fail');
   const blob = await res.blob();
   return await new Promise<string>((resolve, reject) => {
@@ -53,6 +66,7 @@ async function fromPublicApi(text: string, size: number): Promise<string> {
   });
 }
 
+/** Convert an already-rendered SVG (e.g. react-qr-code) to PNG data URL */
 export async function svgElementToPngDataUrl(svg: SVGSVGElement, size = 200): Promise<string> {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -91,17 +105,26 @@ export async function svgElementToPngDataUrl(svg: SVGSVGElement, size = 200): Pr
 
 export async function makeQrPngDataUrl(text: string, size = 200): Promise<string> {
   if (!text) return '';
-  try {
-    const url = await fromQrLib(text, size);
-    if (url) return url;
-  } catch (e) {
-    console.warn('QR lib failed, trying API', e);
+
+  // Try offline lib (up to 2 attempts)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const url = await fromQrLib(text, size);
+      if (url && url.startsWith('data:image')) return url;
+    } catch (e) {
+      console.warn(`QR lib attempt ${attempt + 1} failed`, e);
+      qrLibPromise = null; // allow reload
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
+
+  // Public API fallback
   try {
     const url = await fromPublicApi(text, size);
-    if (url) return url;
+    if (url && url.startsWith('data:image')) return url;
   } catch (e) {
     console.warn('QR API failed', e);
   }
+
   return '';
 }
