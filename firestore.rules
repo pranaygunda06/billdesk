@@ -2,13 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Customer short links — anyone can open invoice link
+    // Customer short links — public open
     match /shares/{id} {
       allow read: if true;
       allow write: if request.auth != null;
     }
 
-    // Admin data — only the logged-in user (same email on phone/laptop)
+    // ONE shared shop database for owner + all staff
+    match /business/{doc} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Old path (migration only)
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null
                          && request.auth.uid == userId;
