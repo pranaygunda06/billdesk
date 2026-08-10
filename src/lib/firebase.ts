@@ -4,7 +4,11 @@ import {
   doc,
   setDoc,
   getDoc,
+  getDocs,
+  deleteDoc,
+  collection,
   serverTimestamp,
+  type DocumentData,
 } from 'firebase/firestore';
 import {
   getAuth,
@@ -26,9 +30,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const dbFirestore = getFirestore(app);
 export const auth = getAuth(app);
-
-/** Shared shop document — ALL staff see the same inventory & invoices */
-const BUSINESS_DOC = doc(dbFirestore, 'business', 'ps-billdesk');
 
 export async function adminLogin(email: string, password: string) {
   const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -58,105 +59,75 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-/**
- * Save full shop data (products, customers, invoices…).
- * Shared for every staff login — not per-email, not per-device.
- */
-export async function saveUserDataToCloud(_uid: string, data: unknown): Promise<boolean> {
+/** Like Swart: each item is its own Firestore document */
+export async function fsSet(col: string, id: string, data: DocumentData): Promise<boolean> {
   try {
-    await withTimeout(
-      setDoc(
-        BUSINESS_DOC,
-        {
-          payload: data,
-          updatedAt: serverTimestamp(),
-          updatedBy: _uid || null,
-        },
-        { merge: true },
-      ),
-      8000,
-      'saveBusinessData',
-    );
+    await withTimeout(setDoc(doc(dbFirestore, col, id), data, { merge: true }), 10000, `set ${col}`);
     return true;
   } catch (e) {
-    console.error('Firebase saveBusinessData failed', e);
+    console.error(`Firestore set ${col}/${id} failed`, e);
     return false;
   }
 }
 
-/** Load shared shop data (same for owner + all staff) */
-export async function loadUserDataFromCloud(_uid: string): Promise<unknown | null> {
+export async function fsDelete(col: string, id: string): Promise<boolean> {
   try {
-    const snap = await withTimeout(getDoc(BUSINESS_DOC), 8000, 'loadBusinessData');
-    if (snap.exists()) {
-      const d = snap.data();
-      if (d?.payload) return d.payload;
-    }
-
-    // One-time migration: if old per-user data exists, use it and copy to shared
-    if (_uid) {
-      try {
-        const oldSnap = await getDoc(doc(dbFirestore, 'users', _uid, 'data', 'main'));
-        if (oldSnap.exists()) {
-          const old = oldSnap.data()?.payload;
-          if (old) {
-            await setDoc(
-              BUSINESS_DOC,
-              { payload: old, updatedAt: serverTimestamp(), migratedFrom: _uid },
-              { merge: true },
-            );
-            return old;
-          }
-        }
-      } catch {
-        /* ignore migration errors */
-      }
-    }
-    return null;
+    await withTimeout(deleteDoc(doc(dbFirestore, col, id)), 8000, `del ${col}`);
+    return true;
   } catch (e) {
-    console.error('Firebase loadBusinessData failed', e);
+    console.error(`Firestore delete ${col}/${id} failed`, e);
+    return false;
+  }
+}
+
+export async function fsGetAll<T extends { id: string }>(col: string): Promise<T[]> {
+  try {
+    const snap = await withTimeout(getDocs(collection(dbFirestore, col)), 12000, `getAll ${col}`);
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as T);
+  } catch (e) {
+    console.error(`Firestore getAll ${col} failed`, e);
+    return [];
+  }
+}
+
+export async function fsGet<T>(col: string, id: string): Promise<T | null> {
+  try {
+    const snap = await withTimeout(getDoc(doc(dbFirestore, col, id)), 8000, `get ${col}`);
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as T;
+  } catch (e) {
+    console.error(`Firestore get ${col}/${id} failed`, e);
     return null;
   }
 }
 
-/** Short link for customers (public read) */
 export async function saveShareToFirebase(
   shortId: string,
   data: { invoiceId: string; token: string },
 ): Promise<boolean> {
-  try {
-    await withTimeout(
-      setDoc(doc(dbFirestore, 'shares', shortId), {
-        invoiceId: data.invoiceId,
-        token: data.token,
-        createdAt: serverTimestamp(),
-        accessedAt: null,
-      }),
-      8000,
-      'saveShare',
-    );
-    return true;
-  } catch (e) {
-    console.error('Firebase saveShare failed', e);
-    return false;
-  }
+  return fsSet('shares', shortId, {
+    invoiceId: data.invoiceId,
+    token: data.token,
+    createdAt: serverTimestamp(),
+  });
 }
 
 export async function getShareFromFirebase(
   shortId: string,
 ): Promise<{ token: string; invoiceId: string } | null> {
-  try {
-    const snap = await withTimeout(
-      getDoc(doc(dbFirestore, 'shares', shortId)),
-      6000,
-      'getShare',
-    );
-    if (!snap.exists()) return null;
-    const d = snap.data();
-    if (!d?.token) return null;
-    return { token: d.token as string, invoiceId: (d.invoiceId as string) || '' };
-  } catch (e) {
-    console.error('Firebase getShare failed', e);
-    return null;
-  }
+  const d = await fsGet<{ token?: string; invoiceId?: string }>('shares', shortId);
+  if (!d?.token) return null;
+  return { token: d.token, invoiceId: d.invoiceId || '' };
+}
+
+export async function saveUserDataToCloud(_uid: string, data: unknown): Promise<boolean> {
+  return fsSet('business', 'ps-billdesk', {
+    payload: data,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function loadUserDataFromCloud(_uid: string): Promise<unknown | null> {
+  const d = await fsGet<{ payload?: unknown }>('business', 'ps-billdesk');
+  return d?.payload ?? null;
 }

@@ -2,25 +2,38 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Like ps-enterprises-swart: any logged-in staff can use the shop
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    // Shared shop data (products, invoices, customers — one doc for whole team)
-    match /business/{docId} {
-      allow read, write: if isSignedIn();
+    match /products/{id} {
+      allow read, write: if signedIn();
+    }
+    match /customers/{id} {
+      allow read, write: if signedIn();
+    }
+    match /invoices/{id} {
+      allow read, write: if signedIn();
+    }
+    match /invoice_items/{id} {
+      allow read, write: if signedIn();
+    }
+    match /payments/{id} {
+      allow read, write: if signedIn();
+    }
+    match /categories/{id} {
+      allow read, write: if signedIn();
+    }
+    match /settings/{id} {
+      allow read, write: if signedIn();
+    }
+    match /business/{id} {
+      allow read, write: if signedIn();
     }
 
-    // Customer short invoice links (public open, staff write)
-    match /shares/{shareId} {
+    match /shares/{id} {
       allow read: if true;
-      allow write: if isSignedIn();
-    }
-
-    // Old path (migration)
-    match /users/{userId}/{document=**} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+      allow write: if signedIn();
     }
 
     match /{document=**} {
