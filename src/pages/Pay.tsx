@@ -4,7 +4,6 @@ import QRCode from 'react-qr-code';
 import html2canvas from 'html2canvas';
 import { decodePaymentToken, type PaymentTokenPayload } from '../lib/paymentLink';
 import { db } from '../lib/db';
-import { getShareFromFirebase } from '../lib/firebase';
 import { formatCurrency, formatDate, clsx, swapCanvasesToImages } from '../lib/utils';
 import { buildUpiLink } from '../lib/upi';
 import { ArrowLeft, CheckCircle2, Copy, Download, QrCode, Share2, Sparkles, Phone, MessageCircle, IndianRupee, RefreshCw } from 'lucide-react';
@@ -22,7 +21,7 @@ export default function Pay() {
   const invRef = useRef<HTMLDivElement>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // Resolve short link: local first, then Firebase (with timeout so UI never spins forever)
+  // Resolve short link: local → localStorage → Firebase (works on any device)
   useEffect(() => {
     let cancelled = false;
 
@@ -32,26 +31,14 @@ export default function Pay() {
 
       try {
         if (!isShort) {
-          // Full long token in the URL
           if (!cancelled) setResolvedToken(token);
           return;
         }
 
-        // 1. Same browser (seller device) — local shortcut
-        try {
-          const local = db.getShareByShortId(token);
-          if (local?.token) {
-            if (!cancelled) setResolvedToken(local.token);
-            return;
-          }
-        } catch {
-          /* ignore local errors */
-        }
-
-        // 2. Firebase — works on customer phone / any network
-        const remote = await getShareFromFirebase(token);
+        // Unified resolver: cache → localStorage → Firebase
+        const resolved = await db.resolveShareToken(token);
         if (!cancelled) {
-          setResolvedToken(remote?.token || '');
+          setResolvedToken(resolved || '');
         }
       } catch (e) {
         console.error('Pay resolve failed', e);
@@ -127,8 +114,8 @@ export default function Pay() {
           </h1>
           {shortFailed ? (
             <div className="mt-3 text-slate-500 text-sm space-y-2 text-center">
-              <p>This short link could not be found. It may have expired or the invoice was never synced.</p>
-              <p className="font-semibold text-slate-700">Ask the sender to share the full payment link instead.</p>
+              <p>This short link could not be found. It may not have finished syncing yet.</p>
+              <p className="font-semibold text-slate-700">Ask the sender to open the invoice again (so it re-syncs) or share the full payment link.</p>
             </div>
           ) : (
             <p className="mt-2 text-slate-500 text-sm text-center">This link seems broken or has expired. Ask the sender to share a fresh invoice link.</p>
@@ -154,6 +141,7 @@ export default function Pay() {
     if (!invRef.current) return;
     const swap = swapCanvasesToImages(invRef.current);
     try {
+      await new Promise((r) => setTimeout(r, 80));
       const canvas = await html2canvas(invRef.current, { backgroundColor: '#ffffff', scale: 2, windowWidth: 480, useCORS: true });
       canvas.toBlob((blob) => {
         if (!blob) return;

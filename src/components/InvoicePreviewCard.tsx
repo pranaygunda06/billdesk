@@ -1,7 +1,8 @@
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState } from 'react';
+import QRCode from 'react-qr-code';
 import type { BusinessProfile, Customer, Invoice, InvoiceItem } from '../types';
 import { formatCurrency, formatDate } from '../lib/utils';
-import { makeQrPngDataUrl } from '../lib/qrPng';
+import { makeQrPngDataUrl, svgElementToPngDataUrl } from '../lib/qrPng';
 
 interface Props {
   invoice: Invoice;
@@ -13,36 +14,55 @@ interface Props {
 }
 
 /**
- * Printable invoice card. Uses ONLY system fonts + raster QR image
+ * Printable invoice card. Uses system fonts + raster QR image
  * so html2canvas export never produces garbled text or blank QR.
+ * Falls back to live SVG QR if PNG generation is slow/fails.
  */
 const InvoicePreviewCard = forwardRef<HTMLDivElement, Props>(function InvoicePreviewCard(
   { invoice, items, customer, business, publicLink },
   ref,
 ) {
-  // Prefer public short link for customer scan; fall back to UPI pay intent
   const qrPayload =
     (publicLink && publicLink.trim()) ||
     buildUpiFallback(business, invoice);
 
   const [qrSrc, setQrSrc] = useState<string>('');
+  const svgWrapRef = useRef<HTMLDivElement>(null);
   const invDate = new Date(invoice.invoiceDate);
   const dueDate = new Date(invoice.dueDate);
   const isPaid = invoice.paymentStatus.toLowerCase() === 'paid';
+  const font = 'Arial, Helvetica, sans-serif';
 
   useEffect(() => {
     let cancelled = false;
     setQrSrc('');
     if (!qrPayload) return;
-    makeQrPngDataUrl(qrPayload, 220).then((url) => {
-      if (!cancelled && url) setQrSrc(url);
-    });
+
+    (async () => {
+      // 1) Primary: offline/API PNG generator
+      const url = await makeQrPngDataUrl(qrPayload, 220);
+      if (!cancelled && url) {
+        setQrSrc(url);
+        return;
+      }
+
+      // 2) Fallback: convert the rendered react-qr-code SVG → PNG
+      await new Promise((r) => setTimeout(r, 50));
+      const svg = svgWrapRef.current?.querySelector('svg');
+      if (svg && !cancelled) {
+        try {
+          const fromSvg = await svgElementToPngDataUrl(svg as SVGSVGElement, 220);
+          if (!cancelled && fromSvg) setQrSrc(fromSvg);
+        } catch (e) {
+          console.warn('SVG→PNG QR fallback failed', e);
+        }
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
   }, [qrPayload]);
-
-  const font = 'Arial, Helvetica, sans-serif';
 
   return (
     <div
@@ -220,6 +240,10 @@ const InvoicePreviewCard = forwardRef<HTMLDivElement, Props>(function InvoicePre
                 style={{ display: 'block', width: 110, height: 110 }}
                 crossOrigin="anonymous"
               />
+            ) : qrPayload ? (
+              <div ref={svgWrapRef} style={{ width: 110, height: 110 }}>
+                <QRCode value={qrPayload} size={110} fgColor="#1e1b4b" bgColor="#ffffff" />
+              </div>
             ) : (
               <div
                 style={{
@@ -233,7 +257,7 @@ const InvoicePreviewCard = forwardRef<HTMLDivElement, Props>(function InvoicePre
                   fontFamily: font,
                 }}
               >
-                {qrPayload ? 'Loading QR…' : 'No link'}
+                No link
               </div>
             )}
           </div>
