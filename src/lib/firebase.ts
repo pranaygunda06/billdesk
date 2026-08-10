@@ -66,7 +66,7 @@ export async function saveUserDataToCloud(uid: string, data: unknown): Promise<b
         },
         { merge: true },
       ),
-      15000,
+      8000,
       'saveUserData',
     );
     return true;
@@ -80,7 +80,7 @@ export async function loadUserDataFromCloud(uid: string): Promise<unknown | null
   try {
     const snap = await withTimeout(
       getDoc(doc(dbFirestore, 'users', uid, 'data', 'main')),
-      15000,
+      8000,
       'loadUserData',
     );
     if (!snap.exists()) return null;
@@ -104,7 +104,7 @@ export async function saveShareToFirebase(
         createdAt: serverTimestamp(),
         accessedAt: null,
       }),
-      15000,
+      8000,
       'saveShare',
     );
     return true;
@@ -120,7 +120,7 @@ export async function getShareFromFirebase(
   try {
     const snap = await withTimeout(
       getDoc(doc(dbFirestore, 'shares', shortId)),
-      12000,
+      6000,
       'getShare',
     );
     if (!snap.exists()) return null;
