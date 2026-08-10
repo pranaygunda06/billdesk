@@ -19,22 +19,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [cloudReady, setCloudReady] = useState(false);
 
   useEffect(() => {
-    const unsub = watchAuth(async (u) => {
+    const unsub = watchAuth((u) => {
       setUser(u);
+      setLoading(false); // UI opens immediately — like Swart
+
       if (u) {
-        setCloudReady(false);
-        try {
-          await db.bindCloudUser(u.uid);
-        } catch (e) {
-          console.error('Cloud bind failed', e);
-        } finally {
-          setCloudReady(true);
-          setLoading(false);
-        }
+        // Cloud pull in background — does NOT block dashboard
+        void db
+          .bindCloudUser(u.uid)
+          .then(() => setCloudReady(true))
+          .catch((e) => {
+            console.error('Cloud bind failed', e);
+            setCloudReady(true);
+          });
       } else {
         db.clearCloudUser();
         setCloudReady(false);
-        setLoading(false);
       }
     });
     return unsub;
@@ -46,24 +46,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       cloudReady,
       async login(email, password) {
-        setLoading(true);
-        try {
-          const u = await adminLogin(email, password);
-          await db.bindCloudUser(u.uid);
-          setCloudReady(true);
-        } finally {
-          setLoading(false);
-        }
+        const u = await adminLogin(email, password);
+        setUser(u);
+        setLoading(false);
+        // Push/pull shop data in background — login feels instant
+        void db
+          .bindCloudUser(u.uid)
+          .then(() => setCloudReady(true))
+          .catch(() => setCloudReady(true));
       },
       async logout() {
-        try {
-          await db.forceCloudPush();
-        } catch {
-          /* ignore */
-        }
+        void db.forceCloudPush().catch(() => {});
         db.clearCloudUser();
-        await adminLogout();
         setCloudReady(false);
+        await adminLogout();
+        setUser(null);
       },
     }),
     [user, loading, cloudReady],
