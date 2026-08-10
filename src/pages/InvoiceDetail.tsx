@@ -5,7 +5,7 @@ import QRCode from 'react-qr-code';
 import { db } from '../lib/db';
 import { useDbTick } from '../hooks/useDbTick';
 import InvoicePreviewCard from '../components/InvoicePreviewCard';
-import { clsx, formatCurrency, formatDate } from '../lib/utils';
+import { clsx, formatCurrency, formatDate, swapCanvasesToImages } from '../lib/utils';
 import { buildWhatsAppMessage, buildWhatsAppUrl, customAmountUpiLink, fixedAmountUpiLink } from '../lib/upi';
 import { buildPaymentLink, encodePaymentToken, originOf } from '../lib/paymentLink';
 import {
@@ -38,6 +38,7 @@ export default function InvoiceDetail() {
   const business = db.getBusinessProfile();
   const invRef = useRef<HTMLDivElement>(null);
   const [toast, setToast] = useState<string>('');
+  const [linkSynced, setLinkSynced] = useState(false);
 
   const fixedLink = useMemo(() => business && invoice ? fixedAmountUpiLink(business, invoice) : '', [business, invoice]);
   const customLink = useMemo(() => business && invoice ? customAmountUpiLink(business, invoice) : '', [business, invoice]);
@@ -71,16 +72,20 @@ export default function InvoiceDetail() {
     };
   }, [invoice, customer, business, items]);
 
-  // Ensure short link is on Firebase + full DB is cloud-synced (so other devices + customers work)
+  // Ensure short link is on Firebase so it works on ANY device
   useEffect(() => {
     if (!shortId || !paymentToken || !invoice) return;
     let cancelled = false;
+    setLinkSynced(false);
     (async () => {
       const ok = await db.publishShareToCloud(shortId, invoice.id, paymentToken);
       await db.forceCloudPush();
-      if (!cancelled && !ok) {
-        setToast('Warning: customer link may not work on other phones — check Firebase rules');
-        setTimeout(() => setToast(''), 4000);
+      if (!cancelled) {
+        setLinkSynced(ok);
+        if (!ok) {
+          setToast('Warning: short link may not work on other phones yet — use full link');
+          setTimeout(() => setToast(''), 4000);
+        }
       }
     })();
     return () => {
@@ -105,7 +110,7 @@ export default function InvoiceDetail() {
   async function capturePngBlob(): Promise<Blob | null> {
     if (!invRef.current) return null;
 
-    // Wait for QR <img> to finish loading
+    // Wait for QR <img> to finish loading (PNG data-URL)
     const imgs = Array.from(invRef.current.querySelectorAll('img'));
     await Promise.all(
       imgs.map((img) =>
@@ -114,13 +119,15 @@ export default function InvoiceDetail() {
           : new Promise<void>((res) => {
               img.onload = () => res();
               img.onerror = () => res();
-              setTimeout(res, 3000);
+              setTimeout(res, 4000);
             }),
       ),
     );
-    // Extra wait if QR still empty (async generator)
-    const hasQr = imgs.some((i) => i.alt === 'Invoice QR' && i.naturalWidth > 40);
-    if (!hasQr) await new Promise((r) => setTimeout(r, 1200));
+    // Extra wait if QR still empty (async generator / SVG fallback)
+    const hasQrImg = imgs.some((i) => i.alt === 'Invoice QR' && i.naturalWidth > 40);
+    const hasQrSvg = !!invRef.current.querySelector('svg');
+    if (!hasQrImg && hasQrSvg) await new Promise((r) => setTimeout(r, 400));
+    if (!hasQrImg && !hasQrSvg) await new Promise((r) => setTimeout(r, 1500));
 
     /*
      * Capture from an OFF-SCREEN clone at full 480px width with NO parent
@@ -154,9 +161,11 @@ export default function InvoiceDetail() {
         h.style.transform = 'none';
       }
     });
-    // Re-bind image srcs (cloned data-URLs stay; external need CORS)
     document.body.appendChild(clone);
-    await new Promise((r) => setTimeout(r, 50));
+
+    // Convert any remaining SVG/canvas QR on the clone into <img>
+    const swap = swapCanvasesToImages(clone);
+    await new Promise((r) => setTimeout(r, 80));
 
     try {
       const canvas = await html2canvas(clone, {
@@ -184,6 +193,7 @@ export default function InvoiceDetail() {
         canvas.toBlob((b) => resolve(b), 'image/png', 1.0),
       );
     } finally {
+      swap.restore();
       clone.remove();
     }
   }
@@ -213,7 +223,6 @@ export default function InvoiceDetail() {
     if (!customer) return;
     try {
       const blob = await capturePngBlob();
-      const canShareFiles = !!navigator.share && blob && Array.isArray((navigator as any).canShare?.({ files: [new File([blob], 'x.png', { type: 'image/png' })] }) ? (navigator as any).canShare({ files: [new File([blob], 'x.png', { type: 'image/png' })] }) : false);
       if (blob && (navigator as any).canShare && (navigator as any).canShare({ files: [new File([blob], `Invoice-${invoice?.invoiceNumber || 'bill'}.png`, { type: 'image/png' })] })) {
         const file = new File([blob], `Invoice-${invoice?.invoiceNumber || 'bill'}.png`, { type: 'image/png' });
         await navigator.share({
@@ -227,28 +236,8 @@ export default function InvoiceDetail() {
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
     }
-    // Fallback: plain WhatsApp URL with the rich message (images can't be attached via URL alone, user can manually attach after)
     window.open(waUrl, '_blank', 'noopener,noreferrer');
     showToast('WhatsApp opened with message. Re-share image via Share Bill.');
-  }
-
-  async function shareBill() {
-    try {
-      const blob = await capturePngBlob();
-      if (blob && (navigator as any).canShare && (navigator as any).canShare({ files: [new File([blob], `Invoice-${invoice?.invoiceNumber || 'bill'}.png`, { type: 'image/png' })] })) {
-        const file = new File([blob], `Invoice-${invoice?.invoiceNumber || 'bill'}.png`, { type: 'image/png' });
-        await navigator.share({
-          title: `Invoice ${invoice?.invoiceNumber}`,
-          text: waMessage,
-          files: [file],
-        });
-        showToast('Invoice image shared ✓');
-        return;
-      }
-    } catch (e: any) {
-      if (e?.name === 'AbortError') return;
-    }
-    await downloadPng();
   }
 
   function shareLinks() {
@@ -352,7 +341,6 @@ export default function InvoiceDetail() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Invoice preview column */}
         <div className="lg:col-span-2 space-y-5">
           <div className="bg-white rounded-2xl border border-slate-100 shadow-card p-4 sm:p-6">
             <div className="flex items-center justify-between mb-3 no-print">
@@ -376,9 +364,7 @@ export default function InvoiceDetail() {
           </div>
         </div>
 
-        {/* Right column: Quick Payment, Customer, Summary */}
         <div className="space-y-5">
-          {/* Quick Payment */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2 bg-gradient-to-r from-emerald-50 to-teal-50/60">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shrink-0"><IndianRupee size={16}/></div>
@@ -408,7 +394,6 @@ export default function InvoiceDetail() {
             </div>
           </div>
 
-          {/* Customer */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-brand-50 text-brand-700 flex items-center justify-center shrink-0">👤</div>
@@ -443,7 +428,6 @@ export default function InvoiceDetail() {
             </div>
           </div>
 
-          {/* Send to Customer - primary CTA */}
           <button
             onClick={openWhatsAppOnly}
             className="w-full rounded-2xl shadow-pop overflow-hidden text-left group"
@@ -463,7 +447,6 @@ export default function InvoiceDetail() {
             </div>
           </button>
 
-          {/* Shareable link */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2 bg-gradient-to-r from-indigo-50 to-brand-50/60">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-600 to-brand-700 text-white flex items-center justify-center shrink-0"><Link2 size={15}/></div>
@@ -475,8 +458,10 @@ export default function InvoiceDetail() {
             <div className="p-4 space-y-3">
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">✨ Short link (clean)</div>
-                  <span className="text-[10px] text-slate-400">Works on this device</span>
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">✨ Short link</div>
+                  <span className={`text-[10px] font-semibold ${linkSynced ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {linkSynced ? 'Synced · any device' : 'Syncing…'}
+                  </span>
                 </div>
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-center gap-2">
                   <div className="flex-1 min-w-0 text-[12px] font-mono text-emerald-800 truncate" title={shortLink}>{shortLink || '—'}</div>
@@ -488,7 +473,7 @@ export default function InvoiceDetail() {
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">🔐 Full link (always works)</div>
-                  <span className="text-[10px] text-slate-400">Any device, no DB</span>
+                  <span className="text-[10px] text-slate-400">Any device</span>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 flex items-center gap-2">
                   <div className="flex-1 min-w-0 text-[12px] font-mono text-slate-600 truncate" title={paymentLink}>{paymentLink || '—'}</div>
@@ -502,13 +487,12 @@ export default function InvoiceDetail() {
                 <ExternalLink size={13}/> Open short link in new tab
               </a>
               <div className="text-[11px] leading-snug text-slate-500 space-y-1">
-                <div>💡 Send the green SHORT link — it's 85% shorter and looks nicer.</div>
-                <div>🛟 If a customer ever opens on an unknown device and the short link says "Not found", send the 🔐 full link. It works 100% anywhere.</div>
+                <div>💡 Prefer the short link after it shows <b>Synced · any device</b>.</div>
+                <div>🛟 Full link always works offline — data is embedded in the URL.</div>
               </div>
             </div>
           </div>
 
-          {/* Summary */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-card p-5">
             <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-2">
               <Sparkles size={13}/> Bill Summary
