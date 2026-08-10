@@ -2,42 +2,38 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() {
-      return request.auth != null;
-    }
-
+    // OPEN shop data — shared on every device (like simple Swart setup)
     match /products/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /customers/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /invoices/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /invoice_items/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /payments/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /categories/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /settings/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
     match /business/{id} {
-      allow read, write: if signedIn();
+      allow read, write: if true;
     }
 
     match /shares/{id} {
-      allow read: if true;
-      allow write: if signedIn();
+      allow read, write: if true;
     }
 
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if true;
     }
   }
 }

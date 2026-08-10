@@ -22,7 +22,7 @@ export default function Settings() {
 
   async function syncNow() {
     if (!user) {
-      setSyncMsg('Login required');
+      setSyncMsg('Login first');
       return;
     }
     setSyncing(true);
@@ -32,19 +32,14 @@ export default function Settings() {
       const ok = await db.forceCloudPush();
       setP(db.getBusinessProfile());
       if (ok) {
-        setSyncMsg(
-          'OK — shop data saved to Firebase. Staff logins will see the same inventory.',
-        );
+        setSyncMsg('OK — data is in Firebase. Open other device, login, refresh.');
       } else {
         setSyncMsg(
-          'FAILED — open Firebase → Firestore → Rules and publish rules for business/{doc}. Permission denied.',
+          'FAILED — Firebase Console → Firestore → Rules → paste open rules → PUBLISH. Then try again.',
         );
       }
     } catch (e: any) {
-      setSyncMsg(
-        (e?.message || 'Sync failed') +
-          ' — check Firestore rules for match /business/{doc}',
-      );
+      setSyncMsg('FAILED — ' + (e?.message || 'permission denied. Publish Firestore rules.'));
     } finally {
       setSyncing(false);
     }
@@ -58,13 +53,10 @@ export default function Settings() {
             <Cloud size={18} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="font-bold text-slate-900">Shared shop cloud</div>
+            <div className="font-bold text-slate-900">Firebase storage (all devices)</div>
             <div className="text-xs text-slate-500 truncate">
-              {user?.email ? `Logged in: ${user.email}` : 'Not signed in'}
-              {db.getCloudUid() ? ' · linked' : ' · not linked'}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">
-              Owner + all staff share one inventory in Firebase (business/ps-billdesk)
+              {user?.email ? user.email : 'Not signed in'}
+              {db.getCloudUid() ? ' · linked' : ''}
             </div>
           </div>
           <button
@@ -89,10 +81,27 @@ export default function Settings() {
             {syncMsg}
           </div>
         )}
-        <div className="px-6 py-3 text-xs text-slate-500 leading-relaxed">
-          1) Publish Firestore rules for <code className="bg-slate-100 px-1 rounded">business</code> and{' '}
-          <code className="bg-slate-100 px-1 rounded">shares</code>. 2) Click{' '}
-          <b>Save to cloud</b>. 3) Staff login with their email → same products.
+        <div className="px-6 py-3 text-xs text-slate-600 leading-relaxed space-y-1">
+          <div>
+            <b>1.</b> Open{' '}
+            <a
+              className="text-sky-700 underline font-semibold"
+              href="https://console.firebase.google.com/project/ps-billdesk/firestore/rules"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Firestore Rules
+            </a>
+          </div>
+          <div>
+            <b>2.</b> Paste rules that allow read/write on products, customers, invoices
+          </div>
+          <div>
+            <b>3.</b> Click <b>Publish</b>
+          </div>
+          <div>
+            <b>4.</b> Click <b>Save to cloud</b> here — must say OK
+          </div>
         </div>
       </div>
 
@@ -103,7 +112,6 @@ export default function Settings() {
         >
           <div className="text-white/70 text-xs font-semibold uppercase tracking-wider">Business Profile</div>
           <div className="text-white text-xl font-extrabold mt-1">Your store on every invoice</div>
-          <div className="text-white/70 text-sm">This info shows on invoices, receipts & WhatsApp messages.</div>
         </div>
         <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
           <Field label="Business Name *">
@@ -113,12 +121,7 @@ export default function Settings() {
             <input className={inp} value={p.phone} onChange={(e) => setP({ ...p, phone: e.target.value })} />
           </Field>
           <Field label="Address" span>
-            <textarea
-              rows={2}
-              className={inp}
-              value={p.address}
-              onChange={(e) => setP({ ...p, address: e.target.value })}
-            />
+            <textarea rows={2} className={inp} value={p.address} onChange={(e) => setP({ ...p, address: e.target.value })} />
           </Field>
           <Field label="GST Number">
             <input
@@ -128,83 +131,42 @@ export default function Settings() {
             />
           </Field>
           <Field label="Invoice Prefix">
-            <input
-              className={inp}
-              value={p.invoicePrefix}
-              onChange={(e) => setP({ ...p, invoicePrefix: e.target.value })}
-            />
+            <input className={inp} value={p.invoicePrefix} onChange={(e) => setP({ ...p, invoicePrefix: e.target.value })} />
           </Field>
-
           <div className="sm:col-span-2 border-t border-slate-100 pt-5 mt-1">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">UPI Payment Setup</div>
-            <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4 mb-4">
-              <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
-                💳 UPI ID for QR code & payment links
-              </div>
-              <div className="text-[11px] text-emerald-600 mt-0.5">
-                Works with Google Pay, PhonePe, Paytm, BHIM and all UPI apps.
-              </div>
-            </div>
             <Field label="UPI ID (VPA) *">
               <input
                 className={inp + ' font-mono text-brand-700'}
-                placeholder="yourname@okicici / psenterprises@upi"
+                placeholder="yourname@upi"
                 value={p.upiId}
                 onChange={(e) => setP({ ...p, upiId: e.target.value })}
               />
             </Field>
           </div>
-
           <div className="sm:col-span-2 border-t border-slate-100 pt-5 mt-1">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">Invoice Text</div>
-            <Field label="Terms & Conditions" span>
+            <Field label="Terms" span>
               <textarea rows={2} className={inp} value={p.terms} onChange={(e) => setP({ ...p, terms: e.target.value })} />
             </Field>
             <Field label="Return Policy" span>
-              <textarea
-                rows={2}
-                className={inp}
-                value={p.returnPolicy}
-                onChange={(e) => setP({ ...p, returnPolicy: e.target.value })}
-              />
+              <textarea rows={2} className={inp} value={p.returnPolicy} onChange={(e) => setP({ ...p, returnPolicy: e.target.value })} />
             </Field>
-            <Field label="Footer Message" span>
-              <textarea
-                rows={2}
-                className={inp}
-                value={p.invoiceFooter}
-                onChange={(e) => setP({ ...p, invoiceFooter: e.target.value })}
-              />
+            <Field label="Footer" span>
+              <textarea rows={2} className={inp} value={p.invoiceFooter} onChange={(e) => setP({ ...p, invoiceFooter: e.target.value })} />
             </Field>
           </div>
         </div>
-        <div className="px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-t border-slate-100">
-          <div>
-            <button
-              onClick={() => {
-                if (!confirm('Reset all data? Customers, products & invoices will be replaced with fresh demo seed.'))
-                  return;
-                db.resetDb();
-                window.location.reload();
-              }}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-bold uppercase tracking-wider"
-            >
-              🗑 Reset Demo Data
-            </button>
-          </div>
-          <div className="flex items-center justify-end gap-3">
-            {saved && (
-              <span className="text-sm font-semibold text-emerald-700 inline-flex items-center gap-1">
-                <CheckCircle2 size={16} /> Saved
-              </span>
-            )}
-            <button
-              onClick={save}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-white text-sm font-semibold bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-700 hover:to-brand-800 shadow-pop"
-            >
-              <Save size={16} /> Save Settings
-            </button>
-          </div>
+        <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3 border-t border-slate-100">
+          {saved && (
+            <span className="text-sm font-semibold text-emerald-700 inline-flex items-center gap-1">
+              <CheckCircle2 size={16} /> Saved
+            </span>
+          )}
+          <button
+            onClick={save}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-white text-sm font-semibold bg-gradient-to-r from-brand-600 to-brand-700"
+          >
+            <Save size={16} /> Save Settings
+          </button>
         </div>
       </div>
     </div>
