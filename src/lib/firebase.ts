@@ -47,21 +47,6 @@ export function watchAuth(cb: (user: User | null) => void) {
   return onAuthStateChanged(auth, cb);
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
-    promise
-      .then((v) => {
-        clearTimeout(t);
-        resolve(v);
-      })
-      .catch((e) => {
-        clearTimeout(t);
-        reject(e);
-      });
-  });
-}
-
 let _lastError = '';
 export function getLastFirebaseError() {
   return _lastError;
@@ -70,11 +55,7 @@ export function getLastFirebaseError() {
 export async function fsSet(col: string, id: string, data: DocumentData): Promise<boolean> {
   try {
     _lastError = '';
-    await withTimeout(
-      setDoc(doc(dbFirestore, col, id), clean(data), { merge: true }),
-      12000,
-      `set ${col}`,
-    );
+    await setDoc(doc(dbFirestore, col, id), clean(data), { merge: true });
     return true;
   } catch (e: any) {
     _lastError = e?.code || e?.message || String(e);
@@ -86,7 +67,7 @@ export async function fsSet(col: string, id: string, data: DocumentData): Promis
 export async function fsDelete(col: string, id: string): Promise<boolean> {
   try {
     _lastError = '';
-    await withTimeout(deleteDoc(doc(dbFirestore, col, id)), 8000, `del ${col}`);
+    await deleteDoc(doc(dbFirestore, col, id));
     return true;
   } catch (e: any) {
     _lastError = e?.code || e?.message || String(e);
@@ -98,7 +79,7 @@ export async function fsDelete(col: string, id: string): Promise<boolean> {
 export async function fsGetAll<T extends { id: string }>(col: string): Promise<T[]> {
   try {
     _lastError = '';
-    const snap = await withTimeout(getDocs(collection(dbFirestore, col)), 15000, `getAll ${col}`);
+    const snap = await getDocs(collection(dbFirestore, col));
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as T);
   } catch (e: any) {
     _lastError = e?.code || e?.message || String(e);
@@ -110,7 +91,7 @@ export async function fsGetAll<T extends { id: string }>(col: string): Promise<T
 export async function fsGet<T>(col: string, id: string): Promise<T | null> {
   try {
     _lastError = '';
-    const snap = await withTimeout(getDoc(doc(dbFirestore, col, id)), 10000, `get ${col}`);
+    const snap = await getDoc(doc(dbFirestore, col, id));
     if (!snap.exists()) return null;
     return { id: snap.id, ...snap.data() } as T;
   } catch (e: any) {
