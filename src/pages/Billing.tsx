@@ -21,6 +21,7 @@ import {
   Sparkles,
   ScanBarcode,
   Camera,
+  PenLine,
 } from 'lucide-react';
 
 interface CartItem extends InvoiceItem {
@@ -50,6 +51,11 @@ export default function Billing() {
   const [productExpanded, setProductExpanded] = useState(true);
   const [notes, setNotes] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customName, setCustomName] = useState('');
+  const [customPrice, setCustomPrice] = useState<string>('');
+  const [customQty, setCustomQty] = useState<string>('1');
+  const [customGst, setCustomGst] = useState<string>('0');
 
   // Load invoice into cart when ?edit=invoiceId
   useEffect(() => {
@@ -116,6 +122,57 @@ export default function Billing() {
       };
       return [...prev, recompute(newItem)];
     });
+  }
+
+  /** Custom line item — not from inventory (for one-off / extra items) */
+  function addCustomItem() {
+    const name = customName.trim();
+    const price = Number(customPrice) || 0;
+    const qty = Math.max(0.01, Number(customQty) || 1);
+    const gst = Math.max(0, Number(customGst) || 0);
+    if (!name || price < 0) return;
+    const dummy: Product = {
+      id: '',
+      name,
+      categoryId: '',
+      brand: '',
+      barcode: '',
+      purchasePrice: 0,
+      sellingPrice: price,
+      gstPercent: gst,
+      mrp: price,
+      currentStock: 0,
+      minimumStock: 0,
+      unit: 'pcs',
+      hsnCode: '',
+      batchNumber: '',
+      expiryDate: '',
+      manufacturer: '',
+      supplierId: '',
+      imagePath: '',
+      variants: '',
+      createdAt: new Date().toISOString(),
+    };
+    const newItem: CartItem = {
+      id: generateId('it_'),
+      invoiceId: '',
+      productId: '',
+      name,
+      quantity: qty,
+      unitPrice: price,
+      discount: 0,
+      gstPercent: gst,
+      lineTotal: 0,
+      product: dummy,
+    };
+    setCart(prev => [...prev, recompute(newItem)]);
+    setCustomName('');
+    setCustomPrice('');
+    setCustomQty('1');
+    setCustomGst('0');
+    setCustomOpen(false);
+    setScanToast(`✓ Custom item "${name}" added`);
+    setTimeout(() => setScanToast(''), 1500);
   }
 
   const handleBarcode = useCallback((code: string) => {
@@ -416,7 +473,68 @@ export default function Billing() {
                 <ScanBarcode size={18}/>
                 <span className="hidden sm:inline">Scan</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setCustomOpen(v => !v)}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-sm"
+                title="Add item not in inventory"
+              >
+                <PenLine size={18}/>
+                <span className="hidden sm:inline">Custom</span>
+              </button>
             </div>
+
+            {customOpen && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 space-y-3">
+                <div className="text-sm font-bold text-indigo-900">Add custom item (not in inventory)</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    value={customName}
+                    onChange={e => setCustomName(e.target.value)}
+                    placeholder="Item name *"
+                    className="sm:col-span-2 w-full px-3 py-2.5 rounded-lg border border-indigo-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+                  />
+                  <input
+                    type="number"
+                    value={customPrice}
+                    onChange={e => setCustomPrice(e.target.value)}
+                    placeholder="Price ₹ *"
+                    className="w-full px-3 py-2.5 rounded-lg border border-indigo-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+                  />
+                  <input
+                    type="number"
+                    value={customQty}
+                    onChange={e => setCustomQty(e.target.value)}
+                    placeholder="Qty"
+                    className="w-full px-3 py-2.5 rounded-lg border border-indigo-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+                  />
+                  <input
+                    type="number"
+                    value={customGst}
+                    onChange={e => setCustomGst(e.target.value)}
+                    placeholder="GST % (optional)"
+                    className="w-full px-3 py-2.5 rounded-lg border border-indigo-200 bg-white text-sm outline-none focus:ring-2 focus:ring-indigo-200"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={addCustomItem}
+                    disabled={!customName.trim() || customPrice === ''}
+                    className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg"
+                  >
+                    <Plus size={16}/> Add to bill
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomOpen(false)}
+                    className="text-sm font-semibold text-slate-600 px-3 py-2"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             {cart.length > 0 && (
               <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="grid grid-cols-12 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 font-bold px-3 py-2">
@@ -433,7 +551,21 @@ export default function Billing() {
                 </div>
                 {cart.map(it => (
                   <div key={it.id} className="grid grid-cols-12 items-center gap-1 px-3 py-2.5 border-t border-slate-100 text-sm">
-                    <div className="col-span-5 truncate font-semibold text-slate-800" title={it.name}>{it.name}</div>
+                    <div className="col-span-5 min-w-0">
+                      {!it.productId ? (
+                        <input
+                          value={it.name}
+                          onChange={e => setField(it.id, { name: e.target.value } as any)}
+                          className="w-full text-sm font-semibold rounded-md border border-indigo-200 bg-indigo-50/50 py-1 px-2"
+                          title="Custom item"
+                        />
+                      ) : (
+                        <div className="truncate font-semibold text-slate-800" title={it.name}>{it.name}</div>
+                      )}
+                      {!it.productId && (
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">Custom</div>
+                      )}
+                    </div>
                     <div className="col-span-2 flex items-center justify-center gap-1">
                       <button onClick={() => updateQty(it.id, -1)} className="w-7 h-7 rounded-md bg-slate-100 hover:bg-slate-200 flex items-center justify-center"><Minus size={12}/></button>
                       <input type="number" value={it.quantity}
