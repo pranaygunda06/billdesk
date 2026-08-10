@@ -10,9 +10,7 @@ import {
 
 const KEY = 'ps_enterprise_web_db_v3';
 
-/** Logged-in UID — enables cloud writes */
 let _cloudUid: string | null = null;
-let _syncTimer: ReturnType<typeof setTimeout> | null = null;
 
 interface DB {
   customers: Customer[];
@@ -94,36 +92,35 @@ function write(dbData: DB) {
 
 async function pushAllToFirestore(d: DB): Promise<boolean> {
   if (!_cloudUid) return false;
-  const jobs: Promise<boolean>[] = [];
-  jobs.push(fsSet('settings', 'business', d.business_profile as unknown as Record<string, unknown>));
-  for (const p of d.products) jobs.push(fsSet('products', p.id, { ...p }));
-  for (const c of d.customers) jobs.push(fsSet('customers', c.id, { ...c }));
-  for (const inv of d.invoices) jobs.push(fsSet('invoices', inv.id, { ...inv }));
-  for (const it of d.invoice_items) jobs.push(fsSet('invoice_items', it.id, { ...it }));
-  for (const pay of d.payments) jobs.push(fsSet('payments', pay.id, { ...pay }));
-  for (const cat of d.categories) jobs.push(fsSet('categories', cat.id, { ...cat }));
-  const results = await Promise.all(jobs);
-  return results.every(Boolean);
+  let ok = 0;
+  const run = async (col: string, id: string, data: object) => {
+    if (await fsSet(col, id, data as any)) ok++;
+  };
+  await run('settings', 'business', { ...d.business_profile });
+  for (const p of d.products) await run('products', p.id, { ...p });
+  for (const c of d.customers) await run('customers', c.id, { ...c });
+  for (const inv of d.invoices) await run('invoices', inv.id, { ...inv });
+  for (const it of d.invoice_items) await run('invoice_items', it.id, { ...it });
+  for (const pay of d.payments) await run('payments', pay.id, { ...pay });
+  return ok > 0;
 }
 
 async function pullAllFromFirestore(): Promise<DB | null> {
-  const [products, customers, invoices, invoice_items, payments, categories, settings] =
-    await Promise.all([
-      fsGetAll<Product>('products'),
-      fsGetAll<Customer>('customers'),
-      fsGetAll<Invoice>('invoices'),
-      fsGetAll<InvoiceItem>('invoice_items'),
-      fsGetAll<Payment>('payments'),
-      fsGetAll<Category>('categories'),
-      fsGet<BusinessProfile>('settings', 'business'),
-    ]);
+  const [products, customers, invoices, invoice_items, payments, settings] = await Promise.all([
+    fsGetAll<Product>('products'),
+    fsGetAll<Customer>('customers'),
+    fsGetAll<Invoice>('invoices'),
+    fsGetAll<InvoiceItem>('invoice_items'),
+    fsGetAll<Payment>('payments'),
+    fsGet<BusinessProfile>('settings', 'business'),
+  ]);
   if (products.length === 0 && customers.length === 0 && invoices.length === 0 && !settings) {
     return null;
   }
   const base = defaults();
   return {
     business_profile: settings || base.business_profile,
-    categories: categories.length ? categories : base.categories,
+    categories: base.categories,
     products,
     customers,
     invoices,
@@ -247,10 +244,6 @@ export const db = {
       void fsSet('invoices', inv.id, { ...inv });
       for (const it of items) void fsSet('invoice_items', it.id, { ...it });
       void fsSet('payments', payment.id, { ...payment });
-      if (inv.customerId) {
-        const c = d.customers.find((x) => x.id === inv.customerId);
-        if (c) void fsSet('customers', c.id, { ...c });
-      }
     }
   },
   updateInvoice(inv: Invoice, items: InvoiceItem[]) {
@@ -372,13 +365,7 @@ export const db = {
     return _cloudUid;
   },
   getShareByShortId(shortId: string): ShareShortcut | undefined {
-    const d = read();
-    const found = d.share_shortcuts.find((s) => s.shortId === shortId);
-    if (found) {
-      found.accessedAt = new Date().toISOString();
-      write(d);
-    }
-    return found;
+    return read().share_shortcuts.find((s) => s.shortId === shortId);
   },
   getAllShareShortcuts(): ShareShortcut[] {
     return read().share_shortcuts.slice().sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
