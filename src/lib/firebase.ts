@@ -7,7 +7,6 @@ import {
   getDocs,
   deleteDoc,
   collection,
-  serverTimestamp,
   type DocumentData,
 } from 'firebase/firestore';
 import {
@@ -31,6 +30,10 @@ const app = initializeApp(firebaseConfig);
 export const dbFirestore = getFirestore(app);
 export const auth = getAuth(app);
 
+function clean(data: DocumentData): DocumentData {
+  return JSON.parse(JSON.stringify(data));
+}
+
 export async function adminLogin(email: string, password: string) {
   const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
   return cred.user;
@@ -46,7 +49,7 @@ export function watchAuth(cb: (user: User | null) => void) {
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const t = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
     promise
       .then((v) => {
         clearTimeout(t);
@@ -59,12 +62,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-/** Like Swart: each item is its own Firestore document */
+let _lastError = '';
+export function getLastFirebaseError() {
+  return _lastError;
+}
+
 export async function fsSet(col: string, id: string, data: DocumentData): Promise<boolean> {
   try {
-    await withTimeout(setDoc(doc(dbFirestore, col, id), data, { merge: true }), 10000, `set ${col}`);
+    _lastError = '';
+    await withTimeout(
+      setDoc(doc(dbFirestore, col, id), clean(data), { merge: true }),
+      12000,
+      `set ${col}`,
+    );
     return true;
-  } catch (e) {
+  } catch (e: any) {
+    _lastError = e?.code || e?.message || String(e);
     console.error(`Firestore set ${col}/${id} failed`, e);
     return false;
   }
@@ -72,9 +85,11 @@ export async function fsSet(col: string, id: string, data: DocumentData): Promis
 
 export async function fsDelete(col: string, id: string): Promise<boolean> {
   try {
+    _lastError = '';
     await withTimeout(deleteDoc(doc(dbFirestore, col, id)), 8000, `del ${col}`);
     return true;
-  } catch (e) {
+  } catch (e: any) {
+    _lastError = e?.code || e?.message || String(e);
     console.error(`Firestore delete ${col}/${id} failed`, e);
     return false;
   }
@@ -82,9 +97,11 @@ export async function fsDelete(col: string, id: string): Promise<boolean> {
 
 export async function fsGetAll<T extends { id: string }>(col: string): Promise<T[]> {
   try {
-    const snap = await withTimeout(getDocs(collection(dbFirestore, col)), 12000, `getAll ${col}`);
+    _lastError = '';
+    const snap = await withTimeout(getDocs(collection(dbFirestore, col)), 15000, `getAll ${col}`);
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as T);
-  } catch (e) {
+  } catch (e: any) {
+    _lastError = e?.code || e?.message || String(e);
     console.error(`Firestore getAll ${col} failed`, e);
     return [];
   }
@@ -92,10 +109,12 @@ export async function fsGetAll<T extends { id: string }>(col: string): Promise<T
 
 export async function fsGet<T>(col: string, id: string): Promise<T | null> {
   try {
-    const snap = await withTimeout(getDoc(doc(dbFirestore, col, id)), 8000, `get ${col}`);
+    _lastError = '';
+    const snap = await withTimeout(getDoc(doc(dbFirestore, col, id)), 10000, `get ${col}`);
     if (!snap.exists()) return null;
     return { id: snap.id, ...snap.data() } as T;
-  } catch (e) {
+  } catch (e: any) {
+    _lastError = e?.code || e?.message || String(e);
     console.error(`Firestore get ${col}/${id} failed`, e);
     return null;
   }
@@ -108,7 +127,7 @@ export async function saveShareToFirebase(
   return fsSet('shares', shortId, {
     invoiceId: data.invoiceId,
     token: data.token,
-    createdAt: serverTimestamp(),
+    createdAt: new Date().toISOString(),
   });
 }
 
@@ -123,7 +142,7 @@ export async function getShareFromFirebase(
 export async function saveUserDataToCloud(_uid: string, data: unknown): Promise<boolean> {
   return fsSet('business', 'ps-billdesk', {
     payload: data,
-    updatedAt: serverTimestamp(),
+    updatedAt: new Date().toISOString(),
   });
 }
 

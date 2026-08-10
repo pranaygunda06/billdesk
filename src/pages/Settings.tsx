@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { db } from '../lib/db';
 import { useDbTick } from '../hooks/useDbTick';
 import { useAuth } from '../hooks/useAuth';
+import { getLastFirebaseError } from '../lib/firebase';
 import type { BusinessProfile } from '../types';
 import { Save, CheckCircle2, Cloud, RefreshCw } from 'lucide-react';
 
@@ -32,14 +33,13 @@ export default function Settings() {
       const ok = await db.forceCloudPush();
       setP(db.getBusinessProfile());
       if (ok) {
-        setSyncMsg('OK — data is in Firebase. Open other device, login, refresh.');
+        setSyncMsg('OK — data is in Firebase. Login on other device and refresh.');
       } else {
-        setSyncMsg(
-          'FAILED — Firebase Console → Firestore → Rules → paste open rules → PUBLISH. Then try again.',
-        );
+        const err = getLastFirebaseError() || 'unknown';
+        setSyncMsg('FAILED — Firebase error: ' + err);
       }
     } catch (e: any) {
-      setSyncMsg('FAILED — ' + (e?.message || 'permission denied. Publish Firestore rules.'));
+      setSyncMsg('FAILED — ' + (e?.message || String(e)));
     } finally {
       setSyncing(false);
     }
@@ -81,28 +81,6 @@ export default function Settings() {
             {syncMsg}
           </div>
         )}
-        <div className="px-6 py-3 text-xs text-slate-600 leading-relaxed space-y-1">
-          <div>
-            <b>1.</b> Open{' '}
-            <a
-              className="text-sky-700 underline font-semibold"
-              href="https://console.firebase.google.com/project/ps-billdesk/firestore/rules"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Firestore Rules
-            </a>
-          </div>
-          <div>
-            <b>2.</b> Paste rules that allow read/write on products, customers, invoices
-          </div>
-          <div>
-            <b>3.</b> Click <b>Publish</b>
-          </div>
-          <div>
-            <b>4.</b> Click <b>Save to cloud</b> here — must say OK
-          </div>
-        </div>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden">
@@ -124,36 +102,20 @@ export default function Settings() {
             <textarea rows={2} className={inp} value={p.address} onChange={(e) => setP({ ...p, address: e.target.value })} />
           </Field>
           <Field label="GST Number">
-            <input
-              className={inp}
-              value={p.gstNumber.toUpperCase()}
-              onChange={(e) => setP({ ...p, gstNumber: e.target.value })}
-            />
+            <input className={inp} value={p.gstNumber.toUpperCase()} onChange={(e) => setP({ ...p, gstNumber: e.target.value })} />
           </Field>
           <Field label="Invoice Prefix">
             <input className={inp} value={p.invoicePrefix} onChange={(e) => setP({ ...p, invoicePrefix: e.target.value })} />
           </Field>
-          <div className="sm:col-span-2 border-t border-slate-100 pt-5 mt-1">
-            <Field label="UPI ID (VPA) *">
-              <input
-                className={inp + ' font-mono text-brand-700'}
-                placeholder="yourname@upi"
-                value={p.upiId}
-                onChange={(e) => setP({ ...p, upiId: e.target.value })}
-              />
-            </Field>
-          </div>
-          <div className="sm:col-span-2 border-t border-slate-100 pt-5 mt-1">
-            <Field label="Terms" span>
-              <textarea rows={2} className={inp} value={p.terms} onChange={(e) => setP({ ...p, terms: e.target.value })} />
-            </Field>
-            <Field label="Return Policy" span>
-              <textarea rows={2} className={inp} value={p.returnPolicy} onChange={(e) => setP({ ...p, returnPolicy: e.target.value })} />
-            </Field>
-            <Field label="Footer" span>
-              <textarea rows={2} className={inp} value={p.invoiceFooter} onChange={(e) => setP({ ...p, invoiceFooter: e.target.value })} />
-            </Field>
-          </div>
+          <Field label="UPI ID">
+            <input className={inp} value={p.upiId} onChange={(e) => setP({ ...p, upiId: e.target.value })} />
+          </Field>
+          <Field label="Terms" span>
+            <textarea rows={2} className={inp} value={p.terms} onChange={(e) => setP({ ...p, terms: e.target.value })} />
+          </Field>
+          <Field label="Footer" span>
+            <textarea rows={2} className={inp} value={p.invoiceFooter} onChange={(e) => setP({ ...p, invoiceFooter: e.target.value })} />
+          </Field>
         </div>
         <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3 border-t border-slate-100">
           {saved && (
