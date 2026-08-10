@@ -11,6 +11,7 @@ export default function Products() {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
+  const [saving, setSaving] = useState(false);
   const cats = db.getCategories();
   const all = db.getProducts();
 
@@ -23,10 +24,18 @@ export default function Products() {
     setOpen(true);
   }
 
-  function save(data: Product) {
-    if (all.some(p => p.id === data.id)) db.updateProduct(data);
-    else db.addProduct(data);
-    setOpen(false);
+  async function save(data: Product) {
+    setSaving(true);
+    try {
+      const isEdit = all.some(p => p.id === data.id);
+      const ok = isEdit ? await db.updateProduct(data) : await db.addProduct(data);
+      if (!ok) {
+        alert('Could not save to cloud. Check internet / Firebase rules. Product may not appear on other devices.');
+      }
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -93,9 +102,9 @@ export default function Products() {
                     </td>
                     <td className="px-5 py-3 text-right whitespace-nowrap">
                       <button onClick={() => openForm(p)} className="w-8 h-8 rounded-md hover:bg-brand-50 text-slate-500 hover:text-brand-700 inline-flex items-center justify-center"><Edit2 size={14}/></button>
-                      <button onClick={() => {
+                      <button onClick={async () => {
                         if (!confirm(`Delete ${p.name}?`)) return;
-                        try { db.deleteProduct(p.id); }
+                        try { await db.deleteProduct(p.id); }
                         catch (e: any) { alert(e?.message || 'Cannot delete.'); }
                       }} className="w-8 h-8 rounded-md hover:bg-rose-50 text-slate-500 hover:text-rose-700 inline-flex items-center justify-center"><Trash2 size={14}/></button>
                     </td>
@@ -114,7 +123,7 @@ export default function Products() {
         </div>
       </div>
 
-      {open && <ProductForm initial={editing!} onClose={() => setOpen(false)} onSave={save} cats={cats} />}
+      {open && <ProductForm initial={editing!} onClose={() => setOpen(false)} onSave={save} cats={cats} saving={saving} />}
     </div>
   );
 }
@@ -130,7 +139,7 @@ function empty(): Product {
   };
 }
 
-function ProductForm({ initial, onClose, onSave, cats }: { initial: Product; onClose: () => void; onSave: (p: Product) => void; cats: any[] }) {
+function ProductForm({ initial, onClose, onSave, cats, saving }: { initial: Product; onClose: () => void; onSave: (p: Product) => void; cats: any[]; saving?: boolean }) {
   const [f, setF] = useState<Product>(initial);
   const [camOpen, setCamOpen] = useState(false);
   return (
@@ -139,7 +148,7 @@ function ProductForm({ initial, onClose, onSave, cats }: { initial: Product; onC
         <div className="sticky top-0 bg-white px-5 py-4 flex items-center justify-between border-b border-slate-100 z-10">
           <div>
             <div className="font-bold text-slate-900">{initial.name ? 'Edit Product' : 'New Product'}</div>
-            <div className="text-xs text-slate-500">Inventory, pricing, and GST details</div>
+            <div className="text-xs text-slate-500">Saved to cloud — visible on all devices</div>
           </div>
           <button onClick={onClose} className="w-9 h-9 rounded-lg hover:bg-slate-100 text-slate-500 flex items-center justify-center"><X size={18}/></button>
         </div>
@@ -214,11 +223,11 @@ function ProductForm({ initial, onClose, onSave, cats }: { initial: Product; onC
         <div className="sticky bottom-0 px-5 py-4 bg-slate-50 flex items-center justify-end gap-2 border-t border-slate-100">
           <button onClick={onClose} className="px-4 py-2 rounded-lg font-semibold text-sm text-slate-600 hover:bg-slate-200">Cancel</button>
           <button
-            disabled={!f.name || f.sellingPrice <= 0}
+            disabled={!f.name || f.sellingPrice <= 0 || saving}
             onClick={() => onSave(f)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white text-sm font-semibold bg-gradient-to-r from-brand-600 to-brand-700 disabled:opacity-50"
           >
-            <Save size={14}/> Save Product
+            <Save size={14}/> {saving ? 'Saving to cloud…' : 'Save Product'}
           </button>
         </div>
       </div>

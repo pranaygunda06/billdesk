@@ -11,10 +11,9 @@ import {
 } from './firebase';
 
 /**
- * Firestore-first with localStorage mirror:
- * - Every write goes to Firebase AND localStorage
- * - On login/refresh: load Firestore, fall back to local mirror if cloud empty/fails
- * - Share shortcuts always published to Firebase so short links work on any device
+ * CLOUD ONLY — Firestore is the single source of truth.
+ * Same login on any device = same products, customers, invoices, shares.
+ * Memory cache is only for fast UI; every change is written to Firebase.
  */
 
 interface DB {
@@ -27,8 +26,6 @@ interface DB {
   share_shortcuts: ShareShortcut[];
   business_profile: BusinessProfile;
 }
-
-const LS_KEY = 'ps_billdesk_db_v1';
 
 let _cloudUid: string | null = null;
 let _cache: DB = emptyDb();
@@ -74,28 +71,6 @@ function shortId(len = 8): string {
   return s;
 }
 
-function mirrorToLocal() {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(_cache));
-  } catch (e) {
-    console.warn('localStorage mirror failed', e);
-  }
-}
-
-function loadLocalMirror(): DB | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as DB;
-    if (!parsed || typeof parsed !== 'object') return null;
-    // Basic shape check
-    if (!Array.isArray(parsed.products)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 type Listener = () => void;
 const _listeners = new Set<Listener>();
 export function subscribe(fn: Listener): () => void {
@@ -110,7 +85,7 @@ async function writeDoc(col: string, id: string, data: Record<string, unknown>):
   const ok = await fsSet(col, id, data);
   if (!ok) {
     _lastWriteError = getLastFirebaseError() || `Failed to save ${col}/${id}`;
-    console.error(_lastWriteError);
+    console.error('[cloud write failed]', col, id, _lastWriteError);
   } else {
     _lastWriteError = '';
   }
@@ -126,76 +101,38 @@ async function reloadFromFirestore(): Promise<boolean> {
       fsGetAll<InvoiceItem>('invoice_items'),
       fsGetAll<Payment>('payments'),
       fsGet<BusinessProfile>('settings', 'business'),
-      fsGetAll<ShareShortcut & { id: string }>('shares'),
+      fsGetAll<{ id: string; invoiceId?: string; token?: string; createdAt?: string }>('shares'),
     ]);
 
     const base = emptyDb();
-    const share_shortcuts: ShareShortcut[] = (shares || []).map((s: any) => ({
-      id: s.id || generateId('sh_'),
-      shortId: s.id || s.shortId,
-      invoiceId: s.invoiceId || '',
-      token: s.token || '',
-      createdAt: s.createdAt || new Date().toISOString(),
-    })).filter((s) => s.token && s.shortId);
+    const share_shortcuts: ShareShortcut[] = (shares || [])
+      .map((s) => ({
+        id: s.id || generateId('sh_'),
+        shortId: s.id,
+        invoiceId: s.invoiceId || '',
+        token: s.token || '',
+        createdAt: s.createdAt || new Date().toISOString(),
+      }))
+      .filter((s) => s.token && s.shortId);
 
-    const cloudHasData =
-      (products && products.length > 0) ||
-      (customers && customers.length > 0) ||
-      (invoices && invoices.length > 0);
-
-    if (cloudHasData || settings) {
-      _cache = {
-        business_profile: settings || base.business_profile,
-        categories: base.categories,
-        products: products || [],
-        customers: customers || [],
-        invoices: invoices || [],
-        invoice_items: invoice_items || [],
-        payments: payments || [],
-        share_shortcuts,
-      };
-      mirrorToLocal();
-      _loaded = true;
-      _notify();
-      return true;
-    }
-
-    // Cloud empty — try local mirror so refresh doesn't wipe data
-    const local = loadLocalMirror();
-    if (local) {
-      _cache = {
-        ...base,
-        ...local,
-        categories: local.categories?.length ? local.categories : base.categories,
-        business_profile: local.business_profile || base.business_profile,
-        share_shortcuts: share_shortcuts.length ? share_shortcuts : (local.share_shortcuts || []),
-      };
-      _loaded = true;
-      _notify();
-      // Push local data up so cloud catches up
-      void db.forceCloudPush();
-      return true;
-    }
-
-    _cache = base;
+    // Cloud is the only source — always use what Firestore returns
+    _cache = {
+      business_profile: settings || base.business_profile,
+      categories: base.categories,
+      products: products || [],
+      customers: customers || [],
+      invoices: invoices || [],
+      invoice_items: invoice_items || [],
+      payments: payments || [],
+      share_shortcuts,
+    };
     _loaded = true;
     _notify();
     return true;
   } catch (e) {
     console.error('reloadFromFirestore failed', e);
-    const local = loadLocalMirror();
-    if (local) {
-      const base = emptyDb();
-      _cache = {
-        ...base,
-        ...local,
-        categories: local.categories?.length ? local.categories : base.categories,
-        business_profile: local.business_profile || base.business_profile,
-      };
-      _loaded = true;
-      _notify();
-      return true;
-    }
+    _loaded = true;
+    _notify();
     return false;
   }
 }
@@ -203,7 +140,6 @@ async function reloadFromFirestore(): Promise<boolean> {
 export const db = {
   resetDb() {
     _cache = emptyDb();
-    try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
     _notify();
   },
 
@@ -214,36 +150,32 @@ export const db = {
   getBusinessProfile(): BusinessProfile {
     return _cache.business_profile;
   },
-  updateBusinessProfile(p: BusinessProfile) {
+  async updateBusinessProfile(p: BusinessProfile) {
     _cache.business_profile = p;
-    mirrorToLocal();
     _notify();
-    void writeDoc('settings', 'business', { ...p });
+    return writeDoc('settings', 'business', { ...p });
   },
 
   getCustomers(): Customer[] {
     return [..._cache.customers].sort((a, b) => a.name.localeCompare(b.name));
   },
-  addCustomer(c: Customer) {
+  async addCustomer(c: Customer) {
     _cache.customers = [..._cache.customers, c];
-    mirrorToLocal();
     _notify();
-    void writeDoc('customers', c.id, { ...c });
+    return writeDoc('customers', c.id, { ...c });
   },
-  updateCustomer(c: Customer) {
+  async updateCustomer(c: Customer) {
     _cache.customers = _cache.customers.map((x) => (x.id === c.id ? c : x));
-    mirrorToLocal();
     _notify();
-    void writeDoc('customers', c.id, { ...c });
+    return writeDoc('customers', c.id, { ...c });
   },
-  deleteCustomer(id: string) {
+  async deleteCustomer(id: string) {
     if (_cache.invoices.some((x) => x.customerId === id) || _cache.payments.some((x) => x.customerId === id)) {
       throw new Error('Cannot delete customer with related invoices/payments.');
     }
     _cache.customers = _cache.customers.filter((x) => x.id !== id);
-    mirrorToLocal();
     _notify();
-    void fsDelete('customers', id);
+    return fsDelete('customers', id);
   },
   getCustomerById(id: string): Customer {
     const found = _cache.customers.find((x) => x.id === id);
@@ -270,26 +202,27 @@ export const db = {
   getProducts(): Product[] {
     return [..._cache.products].sort((a, b) => a.name.localeCompare(b.name));
   },
-  addProduct(p: Product) {
+  async addProduct(p: Product) {
     _cache.products = [..._cache.products, p];
-    mirrorToLocal();
     _notify();
-    void writeDoc('products', p.id, { ...p });
+    const ok = await writeDoc('products', p.id, { ...p });
+    if (!ok) {
+      console.error('Product NOT saved to cloud — will not appear on other devices');
+    }
+    return ok;
   },
-  updateProduct(p: Product) {
+  async updateProduct(p: Product) {
     _cache.products = _cache.products.map((x) => (x.id === p.id ? p : x));
-    mirrorToLocal();
     _notify();
-    void writeDoc('products', p.id, { ...p });
+    return writeDoc('products', p.id, { ...p });
   },
-  deleteProduct(id: string) {
+  async deleteProduct(id: string) {
     if (_cache.invoice_items.some((x) => x.productId === id)) {
       throw new Error('Cannot delete product used in invoices.');
     }
     _cache.products = _cache.products.filter((x) => x.id !== id);
-    mirrorToLocal();
     _notify();
-    void fsDelete('products', id);
+    return fsDelete('products', id);
   },
   getProductById(id: string): Product {
     const found = _cache.products.find((x) => x.id === id);
@@ -324,7 +257,7 @@ export const db = {
   getInvoiceById(id: string): Invoice | undefined {
     return _cache.invoices.find((x) => x.id === id);
   },
-  addInvoice(inv: Invoice, items: InvoiceItem[], payment: Payment) {
+  async addInvoice(inv: Invoice, items: InvoiceItem[], payment: Payment) {
     _cache.invoices = [..._cache.invoices, inv];
     _cache.invoice_items = [..._cache.invoice_items, ...items];
     _cache.payments = [..._cache.payments, payment];
@@ -335,13 +268,13 @@ export const db = {
           : c,
       );
     }
-    mirrorToLocal();
     _notify();
-    void writeDoc('invoices', inv.id, { ...inv });
-    for (const it of items) void writeDoc('invoice_items', it.id, { ...it });
-    void writeDoc('payments', payment.id, { ...payment });
+    const a = await writeDoc('invoices', inv.id, { ...inv });
+    for (const it of items) await writeDoc('invoice_items', it.id, { ...it });
+    const b = await writeDoc('payments', payment.id, { ...payment });
+    return a && b;
   },
-  updateInvoice(inv: Invoice, items: InvoiceItem[]) {
+  async updateInvoice(inv: Invoice, items: InvoiceItem[]) {
     const old = _cache.invoices.find((x) => x.id === inv.id);
     if (!old) throw new Error('Invoice not found');
     if (old.customerId) {
@@ -360,18 +293,18 @@ export const db = {
     _cache.invoices = _cache.invoices.map((x) => (x.id === inv.id ? next : x));
     const removed = _cache.invoice_items.filter((x) => x.invoiceId === inv.id);
     _cache.invoice_items = _cache.invoice_items.filter((x) => x.invoiceId !== inv.id).concat(items);
-    mirrorToLocal();
     _notify();
-    void writeDoc('invoices', inv.id, { ...next });
-    for (const r of removed) void fsDelete('invoice_items', r.id);
-    for (const it of items) void writeDoc('invoice_items', it.id, { ...it });
+    await writeDoc('invoices', inv.id, { ...next });
+    for (const r of removed) await fsDelete('invoice_items', r.id);
+    for (const it of items) await writeDoc('invoice_items', it.id, { ...it });
+    return true;
   },
   getInvoiceItems(invoiceId: string): InvoiceItem[] {
     return _cache.invoice_items.filter((x) => x.invoiceId === invoiceId);
   },
-  markInvoicePaid(invoiceId: string) {
+  async markInvoicePaid(invoiceId: string) {
     const inv = _cache.invoices.find((x) => x.id === invoiceId);
-    if (!inv) return;
+    if (!inv) return false;
     const amount = inv.outstandingAmount;
     const updated: Invoice = {
       ...inv,
@@ -401,10 +334,10 @@ export const db = {
           : c,
       );
     }
-    mirrorToLocal();
     _notify();
-    void writeDoc('invoices', updated.id, { ...updated });
-    void writeDoc('payments', payment.id, { ...payment });
+    await writeDoc('invoices', updated.id, { ...updated });
+    await writeDoc('payments', payment.id, { ...payment });
+    return true;
   },
   getPayments(): Payment[] {
     return [..._cache.payments].sort((a, b) => +new Date(b.paidAt) - +new Date(a.paidAt));
@@ -417,9 +350,7 @@ export const db = {
     const existing = _cache.share_shortcuts.find((s) => s.invoiceId === args.invoiceId);
     if (existing) {
       existing.token = args.token;
-      mirrorToLocal();
       _notify();
-      // Always re-publish so other devices can resolve
       void saveShareToFirebase(existing.shortId, {
         invoiceId: existing.invoiceId,
         token: args.token,
@@ -436,7 +367,6 @@ export const db = {
       createdAt: new Date().toISOString(),
     };
     _cache.share_shortcuts = [..._cache.share_shortcuts, sc];
-    mirrorToLocal();
     _notify();
     void saveShareToFirebase(sid, { invoiceId: args.invoiceId, token: args.token });
     return sc;
@@ -445,7 +375,6 @@ export const db = {
   async publishShareToCloud(shortId: string, invoiceId: string, token: string): Promise<boolean> {
     const ok = await saveShareToFirebase(shortId, { invoiceId, token });
     if (ok) {
-      // Keep local cache in sync
       const existing = _cache.share_shortcuts.find((s) => s.shortId === shortId);
       if (existing) {
         existing.token = token;
@@ -462,25 +391,18 @@ export const db = {
           },
         ];
       }
-      mirrorToLocal();
+      _notify();
     }
     return ok;
   },
 
   async resolveShareToken(shortId: string): Promise<string | null> {
-    // 1. Local cache
     const local = _cache.share_shortcuts.find((s) => s.shortId === shortId);
     if (local?.token) return local.token;
 
-    // 2. localStorage mirror
-    const mirror = loadLocalMirror();
-    const fromMirror = mirror?.share_shortcuts?.find((s) => s.shortId === shortId);
-    if (fromMirror?.token) return fromMirror.token;
-
-    // 3. Firebase (works on any device)
+    // Always hit Firebase so any device can open the link
     const remote = await getShareFromFirebase(shortId);
     if (remote?.token) {
-      // Cache locally for next time
       _cache.share_shortcuts = [
         ..._cache.share_shortcuts.filter((s) => s.shortId !== shortId),
         {
@@ -491,7 +413,6 @@ export const db = {
           createdAt: new Date().toISOString(),
         },
       ];
-      mirrorToLocal();
       return remote.token;
     }
     return null;
@@ -499,28 +420,14 @@ export const db = {
 
   async bindCloudUser(uid: string): Promise<{ fromCloud: boolean; pushed: boolean }> {
     _cloudUid = uid;
-
-    // Seed from local mirror immediately so UI isn't empty while cloud loads
-    const local = loadLocalMirror();
-    if (local && !_loaded) {
-      const base = emptyDb();
-      _cache = {
-        ...base,
-        ...local,
-        categories: local.categories?.length ? local.categories : base.categories,
-        business_profile: local.business_profile || base.business_profile,
-      };
-      _notify();
-    }
-
     try {
+      // Always load from cloud only — same data on every device
       await reloadFromFirestore();
       const hasData =
         _cache.products.length > 0 ||
         _cache.customers.length > 0 ||
         _cache.invoices.length > 0;
-      await writeDoc('settings', 'business', { ..._cache.business_profile });
-      return { fromCloud: hasData, pushed: true };
+      return { fromCloud: hasData, pushed: false };
     } catch (e) {
       console.error('bindCloudUser failed', e);
       return { fromCloud: false, pushed: false };
@@ -529,6 +436,9 @@ export const db = {
 
   clearCloudUser() {
     _cloudUid = null;
+    _cache = emptyDb();
+    _loaded = false;
+    _notify();
   },
 
   async forceCloudPush(): Promise<boolean> {
@@ -543,6 +453,11 @@ export const db = {
       if (await saveShareToFirebase(sh.shortId, { invoiceId: sh.invoiceId, token: sh.token })) ok++;
     }
     return ok > 0;
+  },
+
+  /** Re-fetch everything from Firestore (call after login or to refresh) */
+  async refreshFromCloud(): Promise<boolean> {
+    return reloadFromFirestore();
   },
 
   getCloudUid() {
